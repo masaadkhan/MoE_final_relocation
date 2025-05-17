@@ -17,8 +17,10 @@ class Router(nn.Module):
     def __init__(self, d_model, num_experts):
         super().__init__()
         self.gate = nn.Linear(d_model, num_experts)
+        self.num_experts = num_experts
 
     def forward(self, x, k=1):
+        assert k <= self.num_experts, f"Top-k k={k} can't exceed number of experts={self.num_experts}"
         logits = self.gate(x)
         topk = torch.topk(logits, k, dim=-1)
         routes = topk.indices
@@ -46,6 +48,9 @@ class ExpertParallelMoE(nn.Module):
         expert_inputs = [[] for _ in range(self.num_experts)]
         for idx, experts in enumerate(routes_flat):
             for expert_id in experts.tolist():
+                #TODO(MASAAD): Double check does this flat disrupts the forward pass
+                # Need to ensure statistics don't screw with GPU time...
+                # Needs to be done async as much as possible...
                 expert_inputs[expert_id].append(x_flat[idx].detach().cpu())
 
         expert_inputs_tensor = []
