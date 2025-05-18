@@ -15,8 +15,7 @@ def calc_module_bytes(module):
 
 if __name__ == "__main__":
     d_model = 512
-    #TODO(MASAAD): Can artificially increase the amount of expert traffic increase this...
-    top_k = 4
+    top_k = 2
     B = 128
     S = 512
 
@@ -35,8 +34,9 @@ if __name__ == "__main__":
     decay = 0.95
     router_gpu = 0
     accum_benefit = torch.zeros(num_experts, dtype=torch.float32, device='cuda')
+    swap_count = 0
 
-    total_steps = 100
+    total_steps = 1000
     for step in range(total_steps):
         x = torch.randn(B, S, d_model, device="cuda:0")
         out, tokens_per_expert = moe(x, return_stats=True)
@@ -48,26 +48,36 @@ if __name__ == "__main__":
 
         print(f"Step {step}: loss={loss.item():.4f}")
 
-        router_tokens = tokens_per_expert[moe.experts[0].id]
+        router_tokens = tokens_per_expert[moe.experts[router_gpu].id]
         benefit = calc_benefit(tokens_per_expert - router_tokens, 4, d_model) # Assuming FP32...
         accum_benefit = (accum_benefit + benefit).clamp(min=0)
 
-        # benefit_cpu = benefit.detach().cpu().tolist()
         # Amount of time to transfer an expert with size bytes
-        cost_to_copy = calc_cost(calc_module_bytes(moe.experts[0]))
+        cost_to_copy = calc_cost(calc_module_bytes(moe.experts[router_gpu]))
 
         max_accum_value, max_idx = accum_benefit.max(dim=0)
 
-        print(f"{benefit=}")
-        print(f"{accum_benefit=}")
-        print(f"{cost_to_copy=}")
-        print(f"{max_accum_value=}")
-        print(f"{max_idx=}")
-        print("")
+        tokens_per_expert_float = tokens_per_expert.float()
+        mean_of_tokens = torch.mean(tokens_per_expert_float)
+        std_of_tokens = torch.std(tokens_per_expert_float)
+        var_of_tokens = torch.var(tokens_per_expert_float)
+
+        print(f"{mean_of_tokens=}")
+        print(f"{std_of_tokens=}")
+        print(f"{var_of_tokens=}")
+
+        # print(f"{benefit=}")
+        # print(f"{accum_benefit=}")
+        # print(f"{cost_to_copy=}")
+        # print(f"{max_accum_value=}")
+        # print(f"{max_idx=}")
+        # print("")
 
         if max_accum_value > (cost_to_copy * k):
             moe.swap_experts(moe.experts[router_gpu].id, moe.experts[max_idx].id)
+            accum_benefit.zero_()
+            swap_count += 1
         else:
             accum_benefit *= decay
 
-        # exit()
+    print(f"Swapped {swap_count} amount of times during this training job...")
