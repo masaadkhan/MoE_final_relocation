@@ -46,8 +46,8 @@ def main():
 
     model = ExpertParallelMoE(
         d_model,
-        world_size,
         top_k,
+        world_size,
         expert_capacity
     ).cuda()
 
