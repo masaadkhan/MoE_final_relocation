@@ -2,25 +2,39 @@ import numpy as np
 import random
 from collections import defaultdict
 
+def get_min_beneficial_expert_on_gpu(i):
+    residents = gpu_assignments[i]
+    min_e = min(residents, key=lambda e: B[e][i])
+    return min_e, B[min_e][i]
+
 # ==== CONFIG ====
-M = 3   # number of GPUs in node...
-K = 3   # max number of experts per GPU
-N = M * K   # Total number of experts
+# M = 3   # number of GPUs in node...
+# K = 3   # max number of experts per GPU
+# N = M * K   # Total number of experts
+
+def relocate_algo(total_num_gpus, num_experts_per_gpu):
+    total_num_experts = total_num_gpus * num_experts_per_gpu
+    cost = 
+    benefit_matrix = 
+
+    gpu_assignments = defaultdict(list)
+    expert_assignment = [-1] * N
+
+
 
 # TODO(MASAAD): Double check this assumption about NVLink:
 # (On NVLink - Fixed cost to move from GPU A to B)
 # Not necessarily across nodes...
 C = 5
 
-random.seed(42)
-np.random.seed(42)
+# random.seed(42)
+# np.random.seed(42)
 
-# ==== BENEFIT MATRIX ====
-B = np.random.randint(10, 100, size=(N, M))  # B[n][i] = BENEFIT if Expert n goes to GPU g
+# # ==== BENEFIT MATRIX ====
+# B = np.random.randint(10, 100, size=(N, M))  # B[n][i] = BENEFIT if Expert n goes to GPU g
 
 # ==== INITIAL ASSIGNMENT ====
-gpu_assignments = defaultdict(list)
-expert_assignment = [-1] * N
+
 
 # Random initial assignment (respecting K cap)
 available_slots = list(range(M)) * K
@@ -33,10 +47,7 @@ for n in range(N):
 initial_assignment = expert_assignment[:]
 
 # ==== UTILITY ====
-def get_min_beneficial_expert_on_gpu(i):
-    residents = gpu_assignments[i]
-    min_e = min(residents, key=lambda e: B[e][i])
-    return min_e, B[min_e][i]
+
 
 # ==== OPTIMIZATION LOOP ====
 MAX_ITERS = 50
