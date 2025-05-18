@@ -8,18 +8,13 @@ class TopKRouter(nn.Module):
         self.top_k = top_k
 
     def forward(self, x):
-        # x: [B, S, D]
         B, S, D = x.shape
-        logits = self.gate(x)  # [B, S, num_experts]
-        # Softmax over experts
-        scores = torch.softmax(logits, dim=-1)  # [B, S, num_experts]
-        # For each token, pick top-k experts
-        topk_scores, topk_indices = torch.topk(scores, self.top_k, dim=-1)  # both [B, S, k]
-        # Create a dispatch mask: 1 where expert is in top-k, else 0
+        logits = self.gate(x)
+        scores = torch.softmax(logits, dim=-1)
+        topk_scores, topk_indices = torch.topk(scores, self.top_k, dim=-1)
         dispatch_mask = torch.zeros_like(scores)
         for k in range(self.top_k):
             dispatch_mask.scatter_(-1, topk_indices[..., k:k+1], topk_scores[..., k:k+1])
-        # dispatch_mask: [B, S, num_experts] (can be soft if using topk_scores, or hard mask if set to 1)
         return dispatch_mask
 
 class Expert(nn.Module):
@@ -41,28 +36,42 @@ class DynamicMoE(nn.Module):
         self.experts = nn.ModuleList([
             Expert(d_model).to(_) for _ in expert_devices
         ])
-        print(f"{next(self.experts[1].parameters()).device=}")
         self.expert_devices = list(expert_devices)  # Track current device for each expert
-        print(self.expert_devices)
 
-    def forward(self, x, routing_assignments):
-        # x: [B, S, D] (main device)
-        # routing_assignments: [B*S] int tensor, value is expert index for each token
+    def forward(self, x, return_stats=False):
         B, S, D = x.shape
+        dispatch_mask = self.router(x)
         x_flat = x.view(B*S, D)
         out = torch.zeros_like(x_flat)
+
+        # Stats...
+        tokens_per_expert = []
+        total_routing_weight = []
+
         for i, expert in enumerate(self.experts):
-            mask = (routing_assignments == i)
+            weights = dispatch_mask[..., i].reshape(-1)
+            mask = weights > 0
+
+            # Stats...
+            tokens_per_expert.append(mask.sum().item())
+            total_routing_weight.append(weights.sum().item())
+
             if mask.sum() == 0:
                 continue
 
             expert_input = x_flat[mask].to(self.expert_devices[i])
-
-            print(f"Expert {i} device:", next(expert.parameters()).device)
-            print(f"Expert input device:", expert_input.device)
-            print(f"Main x device:", x.device)
-            # print(f"Expert output device:", expert_output.device)
-
-            expert_output = expert(expert_input).to(x.device)
+            weighted_input = expert_input * weights[mask].to(self.expert_devices[i]).unsqueeze(1)
+            expert_output = expert(weighted_input).to(x.device)
             out[mask] = expert_output
-        return out.view(B, S, D)
+
+        stats = {
+            "tokens_per_expert": tokens_per_expert,
+            "routing_weight_per_expert": total_routing_weight,
+            "max_tokens": max(tokens_per_expert),
+            "most_used_expert": int(torch.tensor(tokens_per_expert).argmax()),
+        }
+
+        if return_stats:
+            return out.view(B, S, D), stats
+        else:
+            return out.view(B, S, D)
