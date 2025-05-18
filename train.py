@@ -1,10 +1,8 @@
 import torch
 import numpy as np
-import math
-from model import ExpertParallelMoE, Expert
+from model import DynamicMoE, Expert
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
-import os
 
 def swap_experts(moe, idx_a, idx_b):
     # Save current states (as CPU tensors for device-agnostic transfer)
@@ -26,77 +24,38 @@ def swap_experts(moe, idx_a, idx_b):
     moe.experts[idx_b].load_state_dict({k: v.to(device_a) for k, v in state_b.items()})
     print(f"Swapped expert {idx_a} (now on {device_b}) with expert {idx_b} (now on {device_a})")
 
-def main():
-    # 1) init
-    dist.init_process_group(backend="nccl")
-    local_rank = int(os.environ["LOCAL_RANK"])
-    torch.cuda.set_device(local_rank)
-
-    world_size = torch.cuda.device_count()
-    num_experts = world_size
-
+if __name__ == "__main__":
     d_model = 512
-    batch_size = 32
-    seq_len = 32
-    top_k = 1
+    num_experts = torch.cuda.device_count()
+    devices = [f"cuda:{i}" for i in range(num_experts)]
 
-    expected_tokens = batch_size * seq_len * top_k
-    tokens_per_expert = math.ceil(expected_tokens / num_experts)
-    expert_capacity = int(tokens_per_expert * 1.25)
+    moe = DynamicMoE(d_model, num_experts, devices)
+    for i, expert in enumerate(moe.experts):
+        print(f"BEFORE Expert {i}: {next(expert.parameters()).device}")
+    print("Router device:", next(moe.router.parameters()).device)
+    moe = moe.to("cuda:0")  # router/main on cuda:0
 
-    model = ExpertParallelMoE(
-        d_model,
-        top_k,
-        world_size,
-        expert_capacity
-    ).cuda()
+    for i, expert in enumerate(moe.experts):
+        print(f"AFTER Expert {i}: {next(expert.parameters()).device}")
+    print("Router device:", next(moe.router.parameters()).device)
 
-    # 3) wrap *only* router with DDP (so expert weights stay local)
-    model.router = DDP(
-        model.router,
-        device_ids=[local_rank],
-        broadcast_buffers=False,
-    )
+    optimizer = torch.optim.Adam(moe.parameters(), lr=1e-4)
 
-    # 4) optimizer (jointly updates router + experts)
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
-
-    # dummy data
-    for step in range(1000):
-        x = torch.randn(8, 128, 512, device=local_rank)  # B=8, S=128
-        y = torch.randn_like(x)
-
-        out, stats = model(x, return_stats=True)
-        # print(f"MASAAD - {stats=}")
-        loss = torch.nn.functional.mse_loss(out, y)
-
-        optimizer.zero_grad()
+    B, S = 8, 32
+    for epoch in range(5):
+        x = torch.randn(B, S, d_model, device="cuda:0")
+        # Randomly assign each token to an expert
+        assignments = torch.randint(0, num_experts, (B*S,), device="cuda:0")
+        out = moe(x, assignments)
+        y = torch.randn_like(out)
+        loss = nn.MSELoss()(out, y)
         loss.backward()
         optimizer.step()
+        optimizer.zero_grad()
+        print(f"Epoch {epoch}: loss={loss.item():.4f}")
 
-        if local_rank == 0 and step % 100 == 0:
-            print(f"step={step} loss={loss.item():.4f}")
-
-#     stats = np.zeros(world_size, dtype=int)
-
-#     #TODO(MASAAD): Make a formula for the benefit of transferring based on the routing statistics...
-#     benefit = 0
-#     #TODO(MASAAD): Make a formula for the cost of transferring
-#     cost = 1
-
-#     epoch_time_ms = []
-#     for epoch in range(num_epochs):
-#         stats[:] = 0
-#         x = torch.randn(batch_size, seq_len, d_model).to('cuda:0')
-#         outputs = moe(x, top_k=top_k, stats=stats)
-#         print(f"Epoch {epoch} token distribution:", stats)
-
-#         #TODO(MASAAD): Benefit/Cost calculation should be done in such a way:
-#         # Calculate the Benefit of moving Expert A from GPU X
-#         # If the Benefit is greater than the Cost of relocating
-#         # If 
-#         if (benefit > cost):
-#             swap_experts(moe, 0, src_gpu=epoch % world_size, dst_gpu=(epoch + 1) % world_size)
-
-if __name__ == "__main__":
-    main()
+        # Example: After epoch 2, relocate expert 0 to GPU 1
+        if epoch == 2 and num_experts > 1:
+            # moe.relocate_expert(0, "cuda:1")
+            # Recreate optimizer to keep params on correct device
+            optimizer = torch.optim.Adam(moe.parameters(), lr=1e-4)
