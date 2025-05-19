@@ -25,7 +25,7 @@ def train_loop(swap_experts=False):
     cooldown_steps = 5
 
     train_times = []
-    total_steps = 5000
+    total_steps = 10000
 
     start_loop_time = time.perf_counter()
     cooldown = cooldown_steps
@@ -33,11 +33,17 @@ def train_loop(swap_experts=False):
         # x = torch.ones(B, S, d_model, device="cuda:0")
         x = torch.randn(B, S, d_model, device="cuda:0")
         if step < 300:
-            x[..., :8] += 10    # favor expert 0
+            x[..., :8] += 10
+            x[..., :8:16] += 100
+            x[..., :16:24] += 1000
         elif step < 600:
-            x[..., 8:16] += 50  # favor expert 1
+            x[..., :8] += 50
+            x[..., :8:16] += 500
+            x[..., :16:24] += 5000
         elif step < 900:
-            x[..., 16:24] += 100 # favor expert 2
+            x[..., :8] += 100
+            x[..., :8:16] += 1000
+            x[..., :16:24] += 10000
         
         torch.cuda.synchronize()
         train_start_time = time.perf_counter()
