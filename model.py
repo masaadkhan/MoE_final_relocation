@@ -55,10 +55,10 @@ class DynamicMoE(nn.Module):
         for i, expert in enumerate(self.experts):
             device_i = self.expert_devices[i]
 
-            weights = dispatch_mask[..., i].reshape(-1)           # (B·S,)
+            weights = dispatch_mask[..., i].reshape(-1)
             mask    = weights > 0
 
-            # --- stats (optional) ---------------------------------------------------
+            # --- stats --------------------------------------------------------------
             tokens_per_expert = (dispatch_mask > 0).sum(dim=(0, 1))
             # ------------------------------------------------------------------------
 
@@ -83,15 +83,18 @@ class DynamicMoE(nn.Module):
     def expert_to_gpu(self, expert_id):
         return next(self.experts[expert_id].parameters()).device
 
-    def swap_experts(self, A, B):
-        device_a = self.expert_to_gpu(A)
-        device_b = self.expert_to_gpu(B)
+    def swap_experts(self, idx_a, idx_b):
+        device_a = self.expert_devices[idx_a]
+        device_b = self.expert_devices[idx_b]
+        expert_a = self.experts[idx_a]
+        expert_b = self.experts[idx_b]
 
-        tmp_expert = self.experts[A]
-        self.experts[A] = self.experts[B].to(device_b)
-        self.experts[B] = tmp_expert.to(device_a)
+        # Move expert_a to device_b and expert_b to device_a
+        self.experts[idx_a] = expert_b.to(device_a)
+        self.experts[idx_b] = expert_a.to(device_b)
 
-        self.expert_devices[A] = device_b
-        self.expert_devices[B] = device_a
+        # Swap the device tracking too
+        self.expert_devices[idx_a], self.expert_devices[idx_b] = device_a, device_b
 
-        print(f"Swapped expert {A} (now on {device_b}) with expert {B} (now on {device_a})")
+        # print(f"Swapped expert {idx_a} (now has expert {expert_b.id} on {device_a}) "
+        #     f"with expert {idx_b} (now has expert {expert_a.id} on {device_b})")
